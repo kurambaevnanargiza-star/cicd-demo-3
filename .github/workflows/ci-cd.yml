@@ -1,0 +1,85 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    name: Build va Test (Node ${{ matrix.node-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [22.x, 24.x]
+    steps:
+      - name: Kodni yuklab olish
+        uses: actions/checkout@v4
+
+      - name: Node.js ni sozlash
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+
+      - name: Bogliqliklarni ornatish
+        run: npm ci
+
+      - name: Build (agar mavjud bolsa)
+        run: npm run build --if-present
+
+      - name: Testlarni ishga tushirish
+        run: npm test
+
+  docker:
+    name: Docker image yaratish va GHCR ga yuborish
+    needs: build-test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Kodni yuklab olish
+        uses: actions/checkout@v4
+
+      - name: Image nomini kichik harflarga otkazish
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+
+      - name: Docker Buildx ni sozlash
+        uses: docker/setup-buildx-action@v3
+
+      - name: GHCR ga kirish
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image yaratish va yuborish
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Image ni tekshirish (smoke test)
+        run: |
+          docker run -d --name demo -p 3000:3000 "$IMAGE:${{ github.sha }}"
+          sleep 5
+          curl --fail http://localhost:3000/health
+          docker logs demo
+
+      - name: Xulosa yozish
+        run: |
+          echo "### Docker image tayyor" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Image: \`$IMAGE:${{ github.sha }}\`" >> "$GITHUB_STEP_SUMMARY"
